@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -21,13 +22,6 @@ type CacheEntity interface {
 	NeedCommit() bool
 }
 
-type cacheMgmt interface {
-	Load() error
-	Write() error
-	Build() error
-	Close() error
-}
-
 type getUserIdentityFunc func() (*IdentityCache, error)
 
 type SubCache[ExcerptT Excerpt, CacheT CacheEntity, EntityT entity.Interface] struct {
@@ -38,6 +32,7 @@ type SubCache[ExcerptT Excerpt, CacheT CacheEntity, EntityT entity.Interface] st
 	readWithResolver func(repository.ClockedRepo, entity.Resolvers, entity.Id) (EntityT, error)
 	makeCached       func(*SubCache[ExcerptT, CacheT, EntityT], getUserIdentityFunc, EntityT) CacheT
 	makeExcerpt      func() Excerpt
+	indexingCallback func(CacheT) error
 
 	typename  string
 	namespace string
@@ -68,6 +63,10 @@ func NewSubCache[ExcerptT Excerpt, CacheT CacheEntity, EntityT entity.Interface]
 		cached:          make(map[entity.Id]CacheT),
 		lru:             newLRUIdCache(),
 	}
+}
+
+func (sc *SubCache[ExcerptT, CacheT, EntityT]) Typename() string {
+	return sc.typename
 }
 
 // Load will try to read from the disk the entity cache file
@@ -151,7 +150,32 @@ func (sc *SubCache[ExcerptT, CacheT, EntityT]) Write() error {
 }
 
 func (sc *SubCache[ExcerptT, CacheT, EntityT]) Build() error {
+	sc.excerpts = make(map[entity.Id]ExcerptT)
 
+	sc.readWithResolver
+
+	allBugs := bug.ReadAllWithResolver(c.repo, c.resolvers)
+
+	// wipe the index just to be sure
+	err := c.repo.ClearBleveIndex("bug")
+	if err != nil {
+		return err
+	}
+
+	for b := range allBugs {
+		if b.Err != nil {
+			return b.Err
+		}
+
+		snap := b.Bug.Compile()
+		c.bugExcerpts[b.Bug.Id()] = NewBugExcerpt(b.Bug, snap)
+
+		if err := c.addBugToSearchIndex(snap); err != nil {
+			return err
+		}
+	}
+
+	_, _ = fmt.Fprintln(os.Stderr, "Done.")
 }
 
 func (sc *SubCache[ExcerptT, CacheT, EntityT]) Close() error {
